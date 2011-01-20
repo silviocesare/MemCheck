@@ -1,0 +1,11 @@
+been 2 months since i looked here, but i think this is some 'bugs' uncovered
+during porting to g++ (if memory serves correct).  They aren't major bugs
+so I'd just ignore it.
+
+Silvio
+
+BlockDriverState *bdrv_first not declared extern in block_int.h
+drives_table in sysemu.h
+nb_drives in sysemu.h
+block.c NB_SUFFIXES too small
+hw/pc.c shutdown_str too small

@@ -1,0 +1,89 @@
+--- qemu-0.9.1/hw/ide.c	2008-01-07 05:38:42.000000000 +1000
++++ qemu-0.9.1-mingw/hw/ide.c	2008-08-17 15:38:49.138729000 +1000
+@@ -2377,22 +2377,17 @@
+ static int guess_disk_lchs(IDEState *s,
+                            int *pcylinders, int *pheads, int *psectors)
+ {
+-    uint8_t *buf;
++    uint8_t *buf = s->io_buffer;
+     int ret, i, heads, sectors, cylinders;
+     struct partition *p;
+     uint32_t nr_sects;
+ 
+-    buf = qemu_memalign(512, 512);
+-    if (buf == NULL)
+-        return -1;
+     ret = bdrv_read(s->bs, 0, buf, 1);
+     if (ret < 0) {
+-        qemu_free(buf);
+         return -1;
+     }
+     /* test msdos magic */
+     if (buf[510] != 0x55 || buf[511] != 0xaa) {
+-        qemu_free(buf);
+         return -1;
+     }
+     for(i = 0; i < 4; i++) {
+@@ -2415,11 +2410,9 @@
+             printf("guessed geometry: LCHS=%d %d %d\n",
+                    cylinders, heads, sectors);
+ #endif
+-            qemu_free(buf);
+             return 0;
+         }
+     }
+-    qemu_free(buf);
+     return -1;
+ }
+ 
+--- qemu-0.9.1/hw/omap.c	2008-01-07 05:38:42.000000000 +1000
++++ qemu-0.9.1-mingw/hw/omap.c	2008-08-17 15:37:30.461147500 +1000
+@@ -26,6 +26,14 @@
+ /* We use pc-style serial ports.  */
+ #include "pc.h"
+ 
++#ifdef _WIN32
++struct tm *MyLocaltime(const time_t *timep, struct tm *result)
++{
++	memcpy(result, localtime(timep), sizeof(*result));
++	return result;
++}
++#endif
++
+ /* Should signal the TCMI */
+ uint32_t omap_badwidth_read8(void *opaque, target_phys_addr_t addr)
+ {
+@@ -4668,7 +4676,11 @@
+         s->round = 0;
+     }
+ 
++#ifdef _WIN32
++    memcpy(&s->current_tm, localtime(&s->ti), sizeof(s->current_tm));
++#else
+     localtime_r(&s->ti, &s->current_tm);
++#endif
+ 
+     if ((s->interrupts & 0x08) && s->ti == s->alarm_ti) {
+         s->status |= 0x40;
+@@ -4747,7 +4759,11 @@
+     s->irq = irq[0];
+     s->alarm = irq[1];
+     s->clk = qemu_new_timer(rt_clock, omap_rtc_tick, s);
++#ifdef _WIN32
++    s->convert = MyLocaltime;
++#else
+     s->convert = rtc_utc ? gmtime_r : localtime_r;
++#endif
+ 
+     omap_rtc_reset(s);
+ 
+--- qemu-0.9.1/configure	2008-01-07 05:38:42.000000000 +1000
++++ qemu-0.9.1-mingw/configure	2008-08-17 15:46:41.896556500 +1000
+@@ -112,6 +112,7 @@
+ CYGWIN*)
+ mingw32="yes"
+ OS_CFLAGS="-mno-cygwin"
++OS_LDFLAGS="-mno-cygwin"
+ VL_OS_LDFLAGS="-mno-cygwin"
+ if [ "$cpu" = "i386" ] ; then
+     kqemu="yes"

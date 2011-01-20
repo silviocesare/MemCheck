@@ -1,0 +1,1057 @@
+diff -ruN linux-2.6.26.3/arch/x86/kernel/e820_32.c linux-2.6.26.3-MemCheck/arch/x86/kernel/e820_32.c
+--- linux-2.6.26.3/arch/x86/kernel/e820_32.c	2008-08-21 04:11:37.000000000 +1000
++++ linux-2.6.26.3-MemCheck/arch/x86/kernel/e820_32.c	2008-08-31 12:13:06.000000000 +1000
+@@ -16,6 +16,8 @@
+ #include <asm/e820.h>
+ #include <asm/setup.h>
+ 
++#include <linux/MemCheck.h>
++
+ struct e820map e820;
+ struct change_member {
+ 	struct e820entry *pbios; /* pointer to original bios entry */
+@@ -532,7 +534,7 @@
+ 			continue;
+ 
+ 		size = last_pfn - curr_pfn;
+-		free_bootmem(PFN_PHYS(curr_pfn), PFN_PHYS(size));
++		myfree_bootmem(PFN_PHYS(curr_pfn), PFN_PHYS(size));
+ 	}
+ }
+ 
+diff -ruN linux-2.6.26.3/arch/x86/mm/init_32.c linux-2.6.26.3-MemCheck/arch/x86/mm/init_32.c
+--- linux-2.6.26.3/arch/x86/mm/init_32.c	2008-08-21 04:11:37.000000000 +1000
++++ linux-2.6.26.3-MemCheck/arch/x86/mm/init_32.c	2008-09-02 16:55:18.000000000 +1000
+@@ -48,6 +48,8 @@
+ #include <asm/setup.h>
+ #include <asm/cacheflush.h>
+ 
++#include <linux/MemCheck.h>
++
+ unsigned int __VMALLOC_RESERVE = 128 << 20;
+ 
+ unsigned long max_pfn_mapped;
+@@ -739,7 +741,7 @@
+ }
+ #endif
+ 
+-void free_init_pages(char *what, unsigned long begin, unsigned long end)
++void myfree_init_pages(char *what, unsigned long begin, unsigned long end)
+ {
+ #ifdef CONFIG_DEBUG_PAGEALLOC
+ 	/*
+@@ -764,13 +766,20 @@
+ 		ClearPageReserved(virt_to_page(addr));
+ 		init_page_count(virt_to_page(addr));
+ 		memset((void *)addr, POISON_FREE_INITMEM, PAGE_SIZE);
+-		free_page(addr);
++//		free_page(addr);
++		myfree_pages(addr, 0);
++		MemCheck_FreeAnySize((void *)addr, PAGE_SIZE);
+ 		totalram_pages++;
+ 	}
+ 	printk(KERN_INFO "Freeing %s: %luk freed\n", what, (end - begin) >> 10);
+ #endif
+ }
+ 
++void free_init_pages(char *what, unsigned long begin, unsigned long end)
++{
++	myfree_init_pages(what, begin, end);
++}
++
+ void free_initmem(void)
+ {
+ 	free_init_pages("unused kernel memory",
+diff -ruN linux-2.6.26.3/include/linux/gfp.h linux-2.6.26.3-MemCheck/include/linux/gfp.h
+--- linux-2.6.26.3/include/linux/gfp.h	2008-08-21 04:11:37.000000000 +1000
++++ linux-2.6.26.3-MemCheck/include/linux/gfp.h	2008-08-30 21:45:08.000000000 +1000
+@@ -173,25 +173,16 @@
+ static inline void arch_alloc_page(struct page *page, int order) { }
+ #endif
+ 
+-extern struct page *__alloc_pages(gfp_t, unsigned int, struct zonelist *);
++//extern struct page *my__alloc_pages(gfp_t, unsigned int, struct zonelist *);
+ 
++#if 0
+ extern struct page *
+ __alloc_pages_nodemask(gfp_t, unsigned int,
+ 				struct zonelist *, nodemask_t *nodemask);
++#endif
+ 
+-static inline struct page *alloc_pages_node(int nid, gfp_t gfp_mask,
+-						unsigned int order)
+-{
+-	if (unlikely(order >= MAX_ORDER))
+-		return NULL;
+-
+-	/* Unknown node is current node */
+-	if (nid < 0)
+-		nid = numa_node_id();
+-
+-	return __alloc_pages(gfp_mask, order, node_zonelist(nid, gfp_mask));
+-}
+-
++struct page *alloc_pages_node(int nid, gfp_t gfp_mask,
++						unsigned int order);
+ #ifdef CONFIG_NUMA
+ extern struct page *alloc_pages_current(gfp_t gfp_mask, unsigned order);
+ 
+@@ -209,10 +200,14 @@
+ #define alloc_pages(gfp_mask, order) \
+ 		alloc_pages_node(numa_node_id(), gfp_mask, order)
+ #define alloc_page_vma(gfp_mask, vma, addr) alloc_pages(gfp_mask, 0)
++
++#define myalloc_pages(gfp_mask, order) \
++		myalloc_pages_node(numa_node_id(), gfp_mask, order)
+ #endif
+ #define alloc_page(gfp_mask) alloc_pages(gfp_mask, 0)
+ 
+ extern unsigned long __get_free_pages(gfp_t gfp_mask, unsigned int order);
++extern unsigned long my__get_free_pages(gfp_t gfp_mask, unsigned int order);
+ extern unsigned long get_zeroed_page(gfp_t gfp_mask);
+ 
+ #define __get_free_page(gfp_mask) \
+diff -ruN linux-2.6.26.3/include/linux/MemCheck.h linux-2.6.26.3-MemCheck/include/linux/MemCheck.h
+--- linux-2.6.26.3/include/linux/MemCheck.h	1970-01-01 10:00:00.000000000 +1000
++++ linux-2.6.26.3-MemCheck/include/linux/MemCheck.h	2008-09-02 11:24:14.000000000 +1000
+@@ -0,0 +1,61 @@
++#ifndef _MemCheck_h
++#define _MemCheck_h
++
++#include <linux/stddef.h>
++#include <linux/mm.h>
++#include <linux/init.h>
++#include <linux/bootmem.h>
++#include <linux/slab.h>
++
++void *mykcalloc(size_t n, size_t size, gfp_t flags);
++
++struct page * 
++__alloc_pages(gfp_t gfp_mask, unsigned int order,
++                struct zonelist *zonelist);
++
++struct page *myalloc_pages_node(int nid, gfp_t gfp_mask,
++                                                unsigned int order);
++void my__free_pages(struct page *page, unsigned int order);
++void myfree_pages(unsigned long addr, unsigned int order);
++
++void *mykmem_cache_alloc(struct kmem_cache *s, gfp_t gfpflags);
++void mykmem_cache_free(struct kmem_cache *s, void *x);
++#ifdef CONFIG_NUMA
++void *mykmem_cache_alloc_node(struct kmem_cache *s, gfp_t gfpflags, int node);
++#endif
++
++void *my__kmalloc_track_caller(size_t size, gfp_t gfpflags, void *caller);
++void *my__kmalloc_node_track_caller(size_t size, gfp_t gfpflags,
++                                        int node, void *caller);
++void mykfree(const void *x);
++
++void myfree_bootmem(unsigned long addr, unsigned long size);
++void *my__alloc_bootmem_nopanic(unsigned long size, unsigned long align,
++                                      unsigned long goal);
++void *myalloc_bootmem_section(unsigned long size,
++                                    unsigned long section_nr);
++void *my__alloc_bootmem_low(unsigned long size, unsigned long align,
++                                  unsigned long goal);
++void *my__alloc_bootmem_low_node(pg_data_t *pgdat, unsigned long size,
++                                       unsigned long align, unsigned long goal);
++void * __init my__alloc_bootmem_node(pg_data_t *pgdat, unsigned long size,
++                                   unsigned long align, unsigned long goal);
++
++#ifndef CONFIG_HAVE_ARCH_BOOTMEM_NODE
++#define myalloc_bootmem_node(pgdat, x) \
++        my__alloc_bootmem_node(pgdat, x, SMP_CACHE_BYTES, __pa(MAX_DMA_ADDRESS))
++#endif
++
++void *mykmalloc(size_t size, gfp_t flags);
++#ifdef CONFIG_NUMA
++void *mykmalloc_node(size_t size, gfp_t flags, int node)
++#endif
++
++
++void MemCheck_Alloc(const void *p, unsigned int size);
++void MemCheck_Free(const void *p);
++void MemCheck_FreeSize(const void *p, unsigned int size);
++void MemCheck_FreeAnySize(const void *p, unsigned int size);
++
++
++#endif
+diff -ruN linux-2.6.26.3/include/linux/slab.h linux-2.6.26.3-MemCheck/include/linux/slab.h
+--- linux-2.6.26.3/include/linux/slab.h	2008-08-21 04:11:37.000000000 +1000
++++ linux-2.6.26.3-MemCheck/include/linux/slab.h	2008-08-30 21:45:08.000000000 +1000
+@@ -178,12 +178,7 @@
+  * for general use, and so are not documented here. For a full list of
+  * potential flags, always refer to linux/gfp.h.
+  */
+-static inline void *kcalloc(size_t n, size_t size, gfp_t flags)
+-{
+-	if (n != 0 && size > ULONG_MAX / n)
+-		return NULL;
+-	return __kmalloc(n * size, flags | __GFP_ZERO);
+-}
++void *kcalloc(size_t n, size_t size, gfp_t flags);
+ 
+ #if !defined(CONFIG_NUMA) && !defined(CONFIG_SLOB)
+ /**
+@@ -200,11 +195,12 @@
+ {
+ 	return kmalloc(size, flags);
+ }
+-
++/*
+ static inline void *__kmalloc_node(size_t size, gfp_t flags, int node)
+ {
+ 	return __kmalloc(size, flags);
+ }
++*/
+ 
+ void *kmem_cache_alloc(struct kmem_cache *, gfp_t);
+ 
+diff -ruN linux-2.6.26.3/include/linux/slub_def.h linux-2.6.26.3-MemCheck/include/linux/slub_def.h
+--- linux-2.6.26.3/include/linux/slub_def.h	2008-08-21 04:11:37.000000000 +1000
++++ linux-2.6.26.3-MemCheck/include/linux/slub_def.h	2008-08-30 21:45:08.000000000 +1000
+@@ -129,53 +129,8 @@
+  * Sorry that the following has to be that ugly but some versions of GCC
+  * have trouble with constant propagation and loops.
+  */
+-static __always_inline int kmalloc_index(size_t size)
+-{
+-	if (!size)
+-		return 0;
+-
+-	if (size <= KMALLOC_MIN_SIZE)
+-		return KMALLOC_SHIFT_LOW;
+-
+-#if KMALLOC_MIN_SIZE <= 64
+-	if (size > 64 && size <= 96)
+-		return 1;
+-	if (size > 128 && size <= 192)
+-		return 2;
+-#endif
+-	if (size <=          8) return 3;
+-	if (size <=         16) return 4;
+-	if (size <=         32) return 5;
+-	if (size <=         64) return 6;
+-	if (size <=        128) return 7;
+-	if (size <=        256) return 8;
+-	if (size <=        512) return 9;
+-	if (size <=       1024) return 10;
+-	if (size <=   2 * 1024) return 11;
+-	if (size <=   4 * 1024) return 12;
+-/*
+- * The following is only needed to support architectures with a larger page
+- * size than 4k.
+- */
+-	if (size <=   8 * 1024) return 13;
+-	if (size <=  16 * 1024) return 14;
+-	if (size <=  32 * 1024) return 15;
+-	if (size <=  64 * 1024) return 16;
+-	if (size <= 128 * 1024) return 17;
+-	if (size <= 256 * 1024) return 18;
+-	if (size <= 512 * 1024) return 19;
+-	if (size <= 1024 * 1024) return 20;
+-	if (size <=  2 * 1024 * 1024) return 21;
+-	return -1;
++//int kmalloc_index(size_t size);
+ 
+-/*
+- * What we really wanted to do and cannot do because of compiler issues is:
+- *	int i;
+- *	for (i = KMALLOC_SHIFT_LOW; i <= KMALLOC_SHIFT_HIGH; i++)
+- *		if (size <= (1 << i))
+- *			return i;
+- */
+-}
+ 
+ /*
+  * Find the slab cache for a given combination of allocation flags and size.
+@@ -183,15 +138,7 @@
+  * This ought to end up with a global pointer to the right cache
+  * in kmalloc_caches.
+  */
+-static __always_inline struct kmem_cache *kmalloc_slab(size_t size)
+-{
+-	int index = kmalloc_index(size);
+-
+-	if (index == 0)
+-		return NULL;
+-
+-	return &kmalloc_caches[index];
+-}
++//struct kmem_cache *kmalloc_slab(size_t size);
+ 
+ #ifdef CONFIG_ZONE_DMA
+ #define SLUB_DMA __GFP_DMA
+@@ -203,46 +150,15 @@
+ void *kmem_cache_alloc(struct kmem_cache *, gfp_t);
+ void *__kmalloc(size_t size, gfp_t flags);
+ 
+-static __always_inline void *kmalloc_large(size_t size, gfp_t flags)
+-{
+-	return (void *)__get_free_pages(flags | __GFP_COMP, get_order(size));
+-}
+-
+-static __always_inline void *kmalloc(size_t size, gfp_t flags)
+-{
+-	if (__builtin_constant_p(size)) {
+-		if (size > PAGE_SIZE)
+-			return kmalloc_large(size, flags);
+-
+-		if (!(flags & SLUB_DMA)) {
+-			struct kmem_cache *s = kmalloc_slab(size);
+-
+-			if (!s)
+-				return ZERO_SIZE_PTR;
+-
+-			return kmem_cache_alloc(s, flags);
+-		}
+-	}
+-	return __kmalloc(size, flags);
+-}
++void *kmalloc_large(size_t size, gfp_t flags);
++
++void *kmalloc(size_t size, gfp_t flags);
+ 
+ #ifdef CONFIG_NUMA
+ void *__kmalloc_node(size_t size, gfp_t flags, int node);
+ void *kmem_cache_alloc_node(struct kmem_cache *, gfp_t flags, int node);
+ 
+-static __always_inline void *kmalloc_node(size_t size, gfp_t flags, int node)
+-{
+-	if (__builtin_constant_p(size) &&
+-		size <= PAGE_SIZE && !(flags & SLUB_DMA)) {
+-			struct kmem_cache *s = kmalloc_slab(size);
+-
+-		if (!s)
+-			return ZERO_SIZE_PTR;
+-
+-		return kmem_cache_alloc_node(s, flags, node);
+-	}
+-	return __kmalloc_node(size, flags, node);
+-}
++void *kmalloc_node(size_t size, gfp_t flags, int node);
+ #endif
+ 
+ #endif /* _LINUX_SLUB_DEF_H */
+diff -ruN linux-2.6.26.3/mm/bootmem.c linux-2.6.26.3-MemCheck/mm/bootmem.c
+--- linux-2.6.26.3/mm/bootmem.c	2008-08-21 04:11:37.000000000 +1000
++++ linux-2.6.26.3-MemCheck/mm/bootmem.c	2008-09-02 22:26:01.000000000 +1000
+@@ -19,6 +19,8 @@
+ 
+ #include "internal.h"
+ 
++#include <linux/MemCheck.h>
++
+ /*
+  * Access to this subsystem has to be serialized externally. (this is
+  * true for the boot process anyway)
+@@ -428,6 +430,7 @@
+ 	idx = (get_mapsize(bdata) + PAGE_SIZE-1) >> PAGE_SHIFT;
+ 	for (i = 0; i < idx; i++, page++) {
+ 		__free_pages_bootmem(page, 0);
++		MemCheck_FreeAnySize(page_address(page), PAGE_SIZE);
+ 		count++;
+ 	}
+ 	total += count;
+@@ -450,6 +453,7 @@
+ 	ret = can_reserve_bootmem_core(pgdat->bdata, physaddr, size, flags);
+ 	if (ret < 0)
+ 		return -ENOMEM;
++	MemCheck_Alloc(__va((void *)physaddr), size);
+ 	reserve_bootmem_core(pgdat->bdata, physaddr, size, flags);
+ 
+ 	return 0;
+@@ -458,6 +462,7 @@
+ void __init free_bootmem_node(pg_data_t *pgdat, unsigned long physaddr,
+ 			      unsigned long size)
+ {
++	MemCheck_FreeSize(__va((void *)physaddr), size);
+ 	free_bootmem_core(pgdat->bdata, physaddr, size);
+ }
+ 
+@@ -486,6 +491,7 @@
+ 		if (ret < 0)
+ 			return ret;
+ 	}
++	MemCheck_Alloc(__va((void *)addr), size); // in or out of the loop?
+ 	list_for_each_entry(bdata, &bdata_list, list)
+ 		reserve_bootmem_core(bdata, addr, size, flags);
+ 
+@@ -493,9 +499,10 @@
+ }
+ #endif /* !CONFIG_HAVE_ARCH_BOOTMEM_NODE */
+ 
+-void __init free_bootmem(unsigned long addr, unsigned long size)
++void __init myfree_bootmem(unsigned long addr, unsigned long size)
+ {
+ 	bootmem_data_t *bdata;
++
+ 	list_for_each_entry(bdata, &bdata_list, list)
+ 		free_bootmem_core(bdata, addr, size);
+ }
+@@ -505,7 +512,7 @@
+ 	return free_all_bootmem_core(NODE_DATA(0));
+ }
+ 
+-void * __init __alloc_bootmem_nopanic(unsigned long size, unsigned long align,
++void * __init my__alloc_bootmem_nopanic(unsigned long size, unsigned long align,
+ 				      unsigned long goal)
+ {
+ 	bootmem_data_t *bdata;
+@@ -535,7 +542,7 @@
+ }
+ 
+ 
+-void * __init __alloc_bootmem_node(pg_data_t *pgdat, unsigned long size,
++void * __init my__alloc_bootmem_node(pg_data_t *pgdat, unsigned long size,
+ 				   unsigned long align, unsigned long goal)
+ {
+ 	void *ptr;
+@@ -548,7 +555,7 @@
+ }
+ 
+ #ifdef CONFIG_SPARSEMEM
+-void * __init alloc_bootmem_section(unsigned long size,
++void * __init myalloc_bootmem_section(unsigned long size,
+ 				    unsigned long section_nr)
+ {
+ 	void *ptr;
+@@ -582,7 +589,7 @@
+ #define ARCH_LOW_ADDRESS_LIMIT	0xffffffffUL
+ #endif
+ 
+-void * __init __alloc_bootmem_low(unsigned long size, unsigned long align,
++void * __init my__alloc_bootmem_low(unsigned long size, unsigned long align,
+ 				  unsigned long goal)
+ {
+ 	bootmem_data_t *bdata;
+@@ -603,7 +610,7 @@
+ 	return NULL;
+ }
+ 
+-void * __init __alloc_bootmem_low_node(pg_data_t *pgdat, unsigned long size,
++void * __init my__alloc_bootmem_low_node(pg_data_t *pgdat, unsigned long size,
+ 				       unsigned long align, unsigned long goal)
+ {
+ 	return __alloc_bootmem_core(pgdat->bdata, size, align, goal,
+diff -ruN linux-2.6.26.3/mm/Makefile linux-2.6.26.3-MemCheck/mm/Makefile
+--- linux-2.6.26.3/mm/Makefile	2008-08-21 04:11:37.000000000 +1000
++++ linux-2.6.26.3-MemCheck/mm/Makefile	2008-08-30 21:45:08.000000000 +1000
+@@ -11,7 +11,7 @@
+ 			   maccess.o page_alloc.o page-writeback.o pdflush.o \
+ 			   readahead.o swap.o truncate.o vmscan.o \
+ 			   prio_tree.o util.o mmzone.o vmstat.o backing-dev.o \
+-			   page_isolation.o $(mmu-y)
++			   page_isolation.o $(mmu-y) MemCheck.o MyMemCheck.o
+ 
+ obj-$(CONFIG_PROC_PAGE_MONITOR) += pagewalk.o
+ obj-$(CONFIG_BOUNCE)	+= bounce.o
+@@ -26,7 +26,7 @@
+ obj-$(CONFIG_TINY_SHMEM) += tiny-shmem.o
+ obj-$(CONFIG_SLOB) += slob.o
+ obj-$(CONFIG_SLAB) += slab.o
+-obj-$(CONFIG_SLUB) += slub.o
++obj-$(CONFIG_SLUB) += slub.o MemCheck_slub.o
+ obj-$(CONFIG_MEMORY_HOTPLUG) += memory_hotplug.o
+ obj-$(CONFIG_FS_XIP) += filemap_xip.o
+ obj-$(CONFIG_MIGRATION) += migrate.o
+diff -ruN linux-2.6.26.3/mm/MemCheck.c linux-2.6.26.3-MemCheck/mm/MemCheck.c
+--- linux-2.6.26.3/mm/MemCheck.c	1970-01-01 10:00:00.000000000 +1000
++++ linux-2.6.26.3-MemCheck/mm/MemCheck.c	2008-08-31 13:07:20.000000000 +1000
+@@ -0,0 +1,202 @@
++#include <linux/MemCheck.h>
++#include <linux/module.h>
++
++void __free_pages_ok(struct page *page, unsigned int order);;
++
++unsigned long my__get_free_pages(gfp_t gfp_mask, unsigned int order)
++{
++        struct page * page;
++        page = myalloc_pages(gfp_mask, order);
++        if (!page)
++                return 0;
++        return (unsigned long) page_address(page);
++}
++
++void *mykcalloc(size_t n, size_t size, gfp_t flags)
++{
++        if (n != 0 && size > ULONG_MAX / n)
++                return NULL;
++        return __kmalloc(n * size, flags | __GFP_ZERO);
++}
++
++void *kcalloc(size_t n, size_t size, gfp_t flags)
++{
++	void *p;
++
++	p = mykcalloc(n, size, flags);
++	MemCheck_Alloc(p, n*size);
++	return p;
++}
++
++EXPORT_SYMBOL(kcalloc);
++
++struct page *alloc_pages_node(int nid, gfp_t gfp_mask,
++                                                unsigned int order)
++{
++	struct page *p;
++
++	p = myalloc_pages_node(nid, gfp_mask, order);
++	MemCheck_Alloc(page_address(p), (1 << order) * PAGE_SIZE);
++	return p;
++}
++
++EXPORT_SYMBOL(alloc_pages_node);
++
++struct page *myalloc_pages_node(int nid, gfp_t gfp_mask,
++                                                unsigned int order)
++{
++        if (unlikely(order >= MAX_ORDER))
++                return NULL;
++
++        /* Unknown node is current node */
++        if (nid < 0)
++                nid = numa_node_id();
++
++        return __alloc_pages(gfp_mask, order, node_zonelist(nid, gfp_mask));
++}
++
++void kfree(const void *x)
++{
++	MemCheck_Free(x);
++	mykfree(x);
++}
++
++EXPORT_SYMBOL(kfree);
++
++void *kmem_cache_alloc(struct kmem_cache *s, gfp_t gfpflags)
++{
++	void *p;
++
++        p = mykmem_cache_alloc(s, gfpflags);
++	if (p != NULL)
++		MemCheck_Alloc(p, s->objsize);
++	return p;
++}
++
++EXPORT_SYMBOL(kmem_cache_alloc);
++
++#ifdef CONFIG_NUMA
++void *kmem_cache_alloc_node(struct kmem_cache *s, gfp_t gfpflags, int node)
++{
++	void *p;
++
++        p = mykmem_cache_alloc_node(s, gfpflags, node);
++	if (p != NULL)
++		MemCheck_Alloc(p, s->objsize);
++	return p;
++}
++
++EXPORT_SYMBOL(kmem_cache_alloc_node);
++#endif
++
++void *__kmalloc_track_caller(size_t size, gfp_t gfpflags, void *caller)
++{
++	void *p;
++
++	p = my__kmalloc_track_caller(size, gfpflags, caller);
++	MemCheck_Alloc(p, size);
++	return p;
++}
++
++EXPORT_SYMBOL(__kmalloc_track_caller);
++
++void *__kmalloc_node_track_caller(size_t size, gfp_t gfpflags,
++                                        int node, void *caller)
++{
++	void *p;
++
++	p = my__kmalloc_node_track_caller(size, gfpflags, node, caller);
++	MemCheck_Alloc(p, size);
++	return p;
++}
++
++EXPORT_SYMBOL(__kmalloc_node_track_caller);
++
++void __free_pages(struct page *page, unsigned int order)
++{
++        if (put_page_testzero(page)) {
++		MemCheck_FreeSize(page_address(page), (1 << order) * PAGE_SIZE);
++                if (order == 0)
++                        free_hot_page(page);
++                else
++                        __free_pages_ok(page, order);
++        }
++}
++
++EXPORT_SYMBOL(__free_pages);
++
++void __init free_bootmem(unsigned long addr, unsigned long size)
++{
++        MemCheck_FreeSize((void *)addr, size);
++	myfree_bootmem(addr, size);
++}
++
++void * __init __alloc_bootmem_nopanic(unsigned long size, unsigned long align,
++                                      unsigned long goal)
++{
++	void *p;
++
++	p = my__alloc_bootmem_nopanic(size, align, goal);
++	MemCheck_Alloc(p, size);
++	return p;
++}
++
++void * __init __alloc_bootmem_node(pg_data_t *pgdat, unsigned long size,
++                                   unsigned long align, unsigned long goal)
++{
++	void *p;
++
++	p = my__alloc_bootmem_node(pgdat, size, align, goal);
++	MemCheck_Alloc(p, size);
++	return p;
++}
++
++#ifdef CONFIG_SPARSEMEM
++void * __init alloc_bootmem_section(unsigned long size,
++                                    unsigned long section_nr)
++{
++	void *p;
++
++	p = myalloc_bootmem_section(size, section_nr);
++	MemCheck_Alloc(p, size);
++	return p;
++}
++#endif
++
++void * __init __alloc_bootmem_low(unsigned long size, unsigned long align,
++                                  unsigned long goal)
++{
++	void *p;
++
++	p = my__alloc_bootmem_low(size, align, goal);
++	MemCheck_Alloc(p, size);
++	return p;
++}
++
++void * __init __alloc_bootmem_low_node(pg_data_t *pgdat, unsigned long size,
++                                       unsigned long align, unsigned long goal)
++{
++	void *p;
++
++	p = my__alloc_bootmem_low_node(pgdat, size, align, goal);
++	MemCheck_Alloc(p, size);
++	return p;
++}
++
++void kmem_cache_free(struct kmem_cache *s, void *x)
++{
++	MemCheck_Free(x);
++	mykmem_cache_free(s, x);
++}
++
++EXPORT_SYMBOL(kmem_cache_free);
++
++void free_pages(unsigned long addr, unsigned int order)
++{
++	if (addr != 0) {
++                VM_BUG_ON(!virt_addr_valid((void *)addr));
++                __free_pages(virt_to_page((void *)addr), order);
++        }
++}
++
++EXPORT_SYMBOL(free_pages);
+diff -ruN linux-2.6.26.3/mm/MemCheck_slub.c linux-2.6.26.3-MemCheck/mm/MemCheck_slub.c
+--- linux-2.6.26.3/mm/MemCheck_slub.c	1970-01-01 10:00:00.000000000 +1000
++++ linux-2.6.26.3-MemCheck/mm/MemCheck_slub.c	2008-08-30 21:45:08.000000000 +1000
+@@ -0,0 +1,135 @@
++#include <linux/module.h>
++#include <linux/slub_def.h>
++
++#include <linux/MemCheck.h>
++
++/*
++ * Sorry that the following has to be that ugly but some versions of GCC
++ * have trouble with constant propagation and loops.
++ */
++static inline int kmalloc_index(size_t size)
++{
++	if (!size)
++		return 0;
++
++	if (size <= KMALLOC_MIN_SIZE)
++		return KMALLOC_SHIFT_LOW;
++
++#if KMALLOC_MIN_SIZE <= 64
++	if (size > 64 && size <= 96)
++		return 1;
++	if (size > 128 && size <= 192)
++		return 2;
++#endif
++	if (size <=          8) return 3;
++	if (size <=         16) return 4;
++	if (size <=         32) return 5;
++	if (size <=         64) return 6;
++	if (size <=        128) return 7;
++	if (size <=        256) return 8;
++	if (size <=        512) return 9;
++	if (size <=       1024) return 10;
++	if (size <=   2 * 1024) return 11;
++	if (size <=   4 * 1024) return 12;
++/*
++ * The following is only needed to support architectures with a larger page
++ * size than 4k.
++ */
++	if (size <=   8 * 1024) return 13;
++	if (size <=  16 * 1024) return 14;
++	if (size <=  32 * 1024) return 15;
++	if (size <=  64 * 1024) return 16;
++	if (size <= 128 * 1024) return 17;
++	if (size <= 256 * 1024) return 18;
++	if (size <= 512 * 1024) return 19;
++	if (size <= 1024 * 1024) return 20;
++	if (size <=  2 * 1024 * 1024) return 21;
++	return -1;
++
++/*
++ * What we really wanted to do and cannot do because of compiler issues is:
++ *	int i;
++ *	for (i = KMALLOC_SHIFT_LOW; i <= KMALLOC_SHIFT_HIGH; i++)
++ *		if (size <= (1 << i))
++ *			return i;
++ */
++}
++
++/*
++ * Find the slab cache for a given combination of allocation flags and size.
++ *
++ * This ought to end up with a global pointer to the right cache
++ * in kmalloc_caches.
++ */
++static inline struct kmem_cache *kmalloc_slab(size_t size)
++{
++	int index = kmalloc_index(size);
++
++	if (index == 0)
++		return NULL;
++
++	return &kmalloc_caches[index];
++}
++
++void *kmalloc(size_t size, gfp_t flags)
++{
++	void *p;
++
++	p = mykmalloc(size, flags);
++	MemCheck_Alloc(p, size);
++	return p;
++}
++
++void *mykmalloc(size_t size, gfp_t flags)
++{
++	if (__builtin_constant_p(size)) {
++		if (size > PAGE_SIZE)
++			return kmalloc_large(size, flags);
++
++		if (!(flags & SLUB_DMA)) {
++			struct kmem_cache *s = kmalloc_slab(size);
++
++			if (!s)
++				return ZERO_SIZE_PTR;
++
++			return mykmem_cache_alloc(s, flags);
++		}
++	}
++	return __kmalloc(size, flags);
++}
++EXPORT_SYMBOL(kmalloc);
++
++#ifdef CONFIG_NUMA
++
++void *mykmalloc_node(size_t size, gfp_t flags, int node)
++{
++	if (__builtin_constant_p(size) &&
++		size <= PAGE_SIZE && !(flags & SLUB_DMA)) {
++			struct kmem_cache *s = kmalloc_slab(size);
++
++		if (!s)
++			return ZERO_SIZE_PTR;
++
++		return mykmem_cache_alloc_node(s, flags, node);
++	}
++	return __kmalloc_node(size, flags, node);
++}
++
++void *kmalloc_node(size_t size, gfp_t flags, int node)
++{
++	void *p;
++
++	p = mykmalloc_node(size, flags, node);
++	MemCheck_Alloc(p, size);
++	return p;
++}
++
++EXPORT_SYMBOL(kmalloc_node);
++
++#endif
++
++void *kmalloc_large(size_t size, gfp_t flags)
++{
++        return (void *)my__get_free_pages(flags | __GFP_COMP, get_order(size));
++}
++
+diff -ruN linux-2.6.26.3/mm/MyMemCheck.c linux-2.6.26.3-MemCheck/mm/MyMemCheck.c
+--- linux-2.6.26.3/mm/MyMemCheck.c	1970-01-01 10:00:00.000000000 +1000
++++ linux-2.6.26.3-MemCheck/mm/MyMemCheck.c	2008-09-01 19:19:19.000000000 +1000
+@@ -0,0 +1,17 @@
++#include <linux/MemCheck.h>
++
++void MemCheck_Alloc(const void *p, unsigned int size)
++{
++}
++
++void MemCheck_Free(const void *p)
++{
++}
++
++void MemCheck_FreeSize(const void *p, unsigned int size)
++{
++}
++
++void MemCheck_FreeAnySize(const void *p, unsigned int size)
++{
++}
+diff -ruN linux-2.6.26.3/mm/page_alloc.c linux-2.6.26.3-MemCheck/mm/page_alloc.c
+--- linux-2.6.26.3/mm/page_alloc.c	2008-08-21 04:11:37.000000000 +1000
++++ linux-2.6.26.3-MemCheck/mm/page_alloc.c	2008-09-02 11:51:30.000000000 +1000
+@@ -51,6 +51,8 @@
+ #include <asm/div64.h>
+ #include "internal.h"
+ 
++#include <linux/MemCheck.h>
++
+ /*
+  * Array of node states.
+  */
+@@ -76,7 +78,7 @@
+ int pageblock_order __read_mostly;
+ #endif
+ 
+-static void __free_pages_ok(struct page *page, unsigned int order);
++void __free_pages_ok(struct page *page, unsigned int order);
+ 
+ /*
+  * results with 256, 32 in the lowmem_reserve sysctl:
+@@ -504,7 +506,7 @@
+ 	spin_unlock(&zone->lock);
+ }
+ 
+-static void __free_pages_ok(struct page *page, unsigned int order)
++void __free_pages_ok(struct page *page, unsigned int order)
+ {
+ 	unsigned long flags;
+ 	int i;
+@@ -538,7 +540,8 @@
+ 		__ClearPageReserved(page);
+ 		set_page_count(page, 0);
+ 		set_page_refcounted(page);
+-		__free_page(page);
++//		__free_page(page);
++		my__free_pages(page, 0);
+ 	} else {
+ 		int loop;
+ 
+@@ -553,7 +556,7 @@
+ 		}
+ 
+ 		set_page_refcounted(page);
+-		__free_pages(page, order);
++		my__free_pages(page, order);
+ 	}
+ }
+ 
+@@ -1647,7 +1650,7 @@
+ 	return __alloc_pages_internal(gfp_mask, order, zonelist, nodemask);
+ }
+ 
+-EXPORT_SYMBOL(__alloc_pages);
++//EXPORT_SYMBOL(__alloc_pages);
+ 
+ /*
+  * Common helper functions.
+@@ -1685,11 +1688,13 @@
+ {
+ 	int i = pagevec_count(pvec);
+ 
+-	while (--i >= 0)
++	while (--i >= 0) {
++		MemCheck_FreeAnySize(page_address(pvec->pages[i]), PAGE_SIZE);
+ 		free_hot_cold_page(pvec->pages[i], pvec->cold);
++	}
+ }
+ 
+-void __free_pages(struct page *page, unsigned int order)
++void my__free_pages(struct page *page, unsigned int order)
+ {
+ 	if (put_page_testzero(page)) {
+ 		if (order == 0)
+@@ -1699,18 +1704,14 @@
+ 	}
+ }
+ 
+-EXPORT_SYMBOL(__free_pages);
+-
+-void free_pages(unsigned long addr, unsigned int order)
++void myfree_pages(unsigned long addr, unsigned int order)
+ {
+ 	if (addr != 0) {
+ 		VM_BUG_ON(!virt_addr_valid((void *)addr));
+-		__free_pages(virt_to_page((void *)addr), order);
++		my__free_pages(virt_to_page((void *)addr), order);
+ 	}
+ }
+ 
+-EXPORT_SYMBOL(free_pages);
+-
+ static unsigned int nr_free_zone_pages(int offset)
+ {
+ 	struct zoneref *z;
+diff -ruN linux-2.6.26.3/mm/slub.c linux-2.6.26.3-MemCheck/mm/slub.c
+--- linux-2.6.26.3/mm/slub.c	2008-08-21 04:11:37.000000000 +1000
++++ linux-2.6.26.3-MemCheck/mm/slub.c	2008-08-30 21:45:08.000000000 +1000
+@@ -24,6 +24,8 @@
+ #include <linux/memory.h>
+ #include <linux/math64.h>
+ 
++#include <linux/MemCheck.h>
++
+ /*
+  * Lock order:
+  *   1. slab_lock(page)
+@@ -1096,9 +1098,9 @@
+ 	int order = oo_order(oo);
+ 
+ 	if (node == -1)
+-		return alloc_pages(flags, order);
++		return myalloc_pages(flags, order);
+ 	else
+-		return alloc_pages_node(node, flags, order);
++		return myalloc_pages_node(node, flags, order);
+ }
+ 
+ static struct page *allocate_slab(struct kmem_cache *s, gfp_t flags, int node)
+@@ -1202,7 +1204,7 @@
+ 
+ 	__ClearPageSlab(page);
+ 	reset_page_mapcount(page);
+-	__free_pages(page, order);
++	my__free_pages(page, order);
+ }
+ 
+ static void rcu_free_slab(struct rcu_head *h)
+@@ -1650,18 +1652,16 @@
+ 	return object;
+ }
+ 
+-void *kmem_cache_alloc(struct kmem_cache *s, gfp_t gfpflags)
++void *mykmem_cache_alloc(struct kmem_cache *s, gfp_t gfpflags)
+ {
+ 	return slab_alloc(s, gfpflags, -1, __builtin_return_address(0));
+ }
+-EXPORT_SYMBOL(kmem_cache_alloc);
+ 
+ #ifdef CONFIG_NUMA
+-void *kmem_cache_alloc_node(struct kmem_cache *s, gfp_t gfpflags, int node)
++void *mykmem_cache_alloc_node(struct kmem_cache *s, gfp_t gfpflags, int node)
+ {
+ 	return slab_alloc(s, gfpflags, node, __builtin_return_address(0));
+ }
+-EXPORT_SYMBOL(kmem_cache_alloc_node);
+ #endif
+ 
+ /*
+@@ -1764,7 +1764,7 @@
+ 	local_irq_restore(flags);
+ }
+ 
+-void kmem_cache_free(struct kmem_cache *s, void *x)
++void mykmem_cache_free(struct kmem_cache *s, void *x)
+ {
+ 	struct page *page;
+ 
+@@ -1772,7 +1772,6 @@
+ 
+ 	slab_free(s, page, x, __builtin_return_address(0));
+ }
+-EXPORT_SYMBOL(kmem_cache_free);
+ 
+ /* Figure out on which slab object the object resides */
+ static struct page *get_object_page(const void *x)
+@@ -2687,11 +2686,10 @@
+ 
+ 	return slab_alloc(s, flags, -1, __builtin_return_address(0));
+ }
+-EXPORT_SYMBOL(__kmalloc);
+ 
+ static void *kmalloc_large_node(size_t size, gfp_t flags, int node)
+ {
+-	struct page *page = alloc_pages_node(node, flags | __GFP_COMP,
++	struct page *page = myalloc_pages_node(node, flags | __GFP_COMP,
+ 						get_order(size));
+ 
+ 	if (page)
+@@ -2757,7 +2755,7 @@
+ }
+ EXPORT_SYMBOL(ksize);
+ 
+-void kfree(const void *x)
++void mykfree(const void *x)
+ {
+ 	struct page *page;
+ 	void *object = (void *)x;
+@@ -2772,7 +2770,6 @@
+ 	}
+ 	slab_free(page->slab, page, object, __builtin_return_address(0));
+ }
+-EXPORT_SYMBOL(kfree);
+ 
+ /*
+  * kmem_cache_shrink removes empty slabs from the partial lists and sorts
+@@ -3227,7 +3224,7 @@
+ 
+ #endif
+ 
+-void *__kmalloc_track_caller(size_t size, gfp_t gfpflags, void *caller)
++void *my__kmalloc_track_caller(size_t size, gfp_t gfpflags, void *caller)
+ {
+ 	struct kmem_cache *s;
+ 
+@@ -3242,7 +3239,7 @@
+ 	return slab_alloc(s, gfpflags, -1, caller);
+ }
+ 
+-void *__kmalloc_node_track_caller(size_t size, gfp_t gfpflags,
++void *my__kmalloc_node_track_caller(size_t size, gfp_t gfpflags,
+ 					int node, void *caller)
+ {
+ 	struct kmem_cache *s;
+diff -ruN linux-2.6.26.3/mm/swap.c linux-2.6.26.3-MemCheck/mm/swap.c
+--- linux-2.6.26.3/mm/swap.c	2008-08-21 04:11:37.000000000 +1000
++++ linux-2.6.26.3-MemCheck/mm/swap.c	2008-08-30 21:45:08.000000000 +1000
+@@ -31,6 +31,8 @@
+ #include <linux/backing-dev.h>
+ #include <linux/memcontrol.h>
+ 
++#include <linux/MemCheck.h>
++
+ /* How many pages do we try to swap or page in/out together? */
+ int page_cluster;
+ 
+@@ -54,6 +56,7 @@
+ 		del_page_from_lru(zone, page);
+ 		spin_unlock_irqrestore(&zone->lru_lock, flags);
+ 	}
++	MemCheck_FreeSize(page_address(page), PAGE_SIZE);
+ 	free_hot_page(page);
+ }
+ 

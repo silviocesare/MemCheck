@@ -1,0 +1,112 @@
+INTRODUCTION
+------------
+
+MemCheck is a tool written by Silvio Cesare <silvio.cesare@gmail.com> for
+reporting out of bounds heap access in an x86 Linux Kernel as they occur.
+
+The most recent version of MemCheck can be found at
+http://silvio.cesare.googlepages.com
+
+Documentation might also be found archived in my blog
+http://silviocesare.wordpress.com
+
+This software is as-is.  It worked last time I used it on Linux 2.6.26.3
+compiled in a Windows Cygwin environment with the MingW compile tools, but I
+can't comment on how useful it is now.  But send me bug reports anyway and
+I'll try to fix them.
+
+I can't image many people using this tool currently, as it's quite complicated
+to setup and run.  I stopped development on it after I tested the 2.6.26.3
+kernel and found no bugs, which made me a bit dishearted.
+
+If there is a demand for it, I'll tidy it up, so if you have plans on using
+it, send me an EMail.
+
+INSTALATION
+-----------
+
+The steps are to compile MemCheck-qemu, install Linux on a qemu image using
+a normal version of qemu, patch and compile the kernel on the qemu image,
+copy System.map from the guest, then run the MemCheck qemu with the guest
+image you've installed and patched.
+
+First, make sure you've got a working version of qemu running.
+
+Next you need to compile MemCheck-qemu.
+
+./configure
+make
+
+You might need to do
+./configure --extra-cflags=-I/usr/include
+That might happen if your using local libraries for zlib or SDL etc.  Infact
+it's quite a struggle to build the regular qemu on Windows and this is
+very much the same with MemCheck.  You will need to install the dependancies.
+If you have tried and failed, then EMail me.  There may have been other things
+I did to get it to compile that many months ago that I have forgotten now.
+I think I had to do some hacks to get GnuTLS to work also..  If there is
+a demand, I can release a binary package.
+
+Then you need to install Linux on a qemu image.  qemu-img.exe is responsible
+for creating a disk image.  Look at the qemu documentation for how to use
+this and install Linux, but the following _might_ help.
+
+./qemu-img create -f qcow2 Linux.dsk 10G
+
+You should use a copy of the regular (non MemCheck)
+qemu to install Linux.  Note that qemu 0.9.1 doesn't work in windows without
+applying the patches qemu-0.9.1-mingw.diff.  If you're using QemuManager
+then use the 0.9.0 version which works.  It's easier to use one of the qemu
+frontends, as you dont have to fiddle with lengthy command lines.
+
+I recommend around 10g at least for the image, but you might do fine with
+less if you have experience.  A full Linux installation plus kernel source
+takes up some room, and if you use the qemu qcow2 disk format, you'll
+only physically use what you actually need.
+
+You then need to upload the Linux Kernel sources and patch it using
+GuestKernelPatch.diff.  Re-read the qemu documentation on how to use the
+network to do a file transfer.  I actually use -net user for qemu and use
+netcat to transfer content, so I don't have to use any special priviledges.
+If your using a kernel configuration with a relocatable kernel, then
+you might need to change the physical start and align (CONFIG_PHYSICAL_START,
+CONFIG_PHYSICAL_ALIGN) so System.map gets the correct symbol addresses.
+This post might be helpful
+http://osdir.com/ml/linux.kernel.crash-dump.crash-utility/2007-07/msg00063.html
+I've included a kernel config GuestKernelConfig.config for 2.6.26.3 that is
+known to work.
+
+The System.map from the guest kernel must be copied and put in the current
+directory.  Lame restriction I know; Hey, I'm using it as a 1 off test suite,
+not a debugging environment so easy on the complaints ;-)  EMail if you
+want this changed.
+
+RUNNING MEMCHECK
+----------------
+
+Run qemu from MemCheck-qemu as you would normally run qemu except use the
+modified guest image, and make sure you have the guest System.map in the
+current directory.  qemu.exe is in the i386-softmmu directory of MemCheck-qemu.
+I have also supplied bios images and the directory for these is specified
+with the -L option in MemCheck-qemu (same as qemu).
+
+Check the qemu documentation but something similar to this might work
+./i386-softmmu/qemu.exe -L "C:\Users\silvio\Desktop\MySources\MemCheck" -m512 -hda "C:\\Users\\silvio\\Desktop\\MySources\\MemCheck\\Linux.dsk" -snapshot -net user -net nic
+
+You must change the pathnames to reflect your own system for that above line
+to work.
+
+It's probably best to boot using slub debugging which puts a redzone at
+the end of slub allocations using the slub_debug kernel boottime option.  The
+redzone seperates what would be otherwise adjacent buffers, so buffer overflows
+from one buffer may not be detected as using invalid memory since the
+adjacent buffer is certainly valid.
+
+If there is an out of bounds heap access, a double free, or even a kernel
+allocation that overlaps then you'll get a kernel stack trace of the guest.
+Symbols from System.map will be used, but if the problem is in a module
+then I feel sorry for you.  Debug these reports as you would a regular kernel
+oops or panic.
+
+--
+Silvio
